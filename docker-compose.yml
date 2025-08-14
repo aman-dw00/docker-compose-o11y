@@ -1,0 +1,204 @@
+version: "3.8"
+
+services:
+  activemq:
+    image: webcenter/activemq:latest
+    platform: linux/amd64
+    container_name: activemq
+    ports:
+      - "8161:8161"     # Web console
+      - "61616:61616"   # OpenWire
+      - "1099:1099"     # JMX RMI
+    environment:
+      ACTIVEMQ_OPTS: "-Dcom.sun.management.jmxremote=true \
+                      -Dcom.sun.management.jmxremote.port=1099 \
+                      -Dcom.sun.management.jmxremote.rmi.port=1099 \
+                      -Dcom.sun.management.jmxremote.authenticate=false \
+                      -Dcom.sun.management.jmxremote.ssl=false \
+                      -Djava.rmi.server.hostname=activemq"
+    volumes:
+      - ./create-destinations.sh:/opt/activemq/scripts/create-destinations.sh
+    networks:
+      - monitoring
+
+  # activemq2:
+  #   image: webcenter/activemq:latest
+  #   platform: linux/amd64
+  #   container_name: activemq2
+  #   ports:
+  #     - "8261:8161"     # Web console
+  #     - "62616:61616"   # OpenWire
+  #     - "2099:1099"     # JMX RMI (different port)
+  #   environment:
+  #     ACTIVEMQ_OPTS: "-Dcom.sun.management.jmxremote=true \
+  #                     -Dcom.sun.management.jmxremote.port=1099 \
+  #                     -Dcom.sun.management.jmxremote.rmi.port=1099 \
+  #                     -Dcom.sun.management.jmxremote.authenticate=false \
+  #                     -Dcom.sun.management.jmxremote.ssl=false \
+  #                     -Djava.rmi.server.hostname=activemq2"
+  #   networks:
+  #     - monitoring
+
+  otel-collector:
+    build: .
+    platform: linux/amd64
+    container_name: otel-collector
+    volumes:
+      - ./otel-config.yaml:/etc/otel/config.yaml
+      - ./opentelemetry-jmx-metrics.jar:/opt/opentelemetry-java-contrib-jmx-metrics.jar
+      - /tmp:/tmp
+      - ./scripts:/scripts
+    ports:
+      - "9464:9464"
+      - "1777:1777"
+    networks:
+      - monitoring
+  vmagent:
+    image: victoriametrics/vmagent:latest
+    platform: linux/amd64
+    container_name: vmagent
+    command:
+      - "--promscrape.config=/etc/vmagent/scrape.yml"
+      - "--remoteWrite.url=http://victoriametrics:8428/api/v1/write"
+    volumes:
+      - ./vmagent-scrape.yml:/etc/vmagent/scrape.yml
+    depends_on:
+      - activemq
+      - victoriametrics
+    networks:
+      - monitoring
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    platform: linux/amd64
+    container_name: victoriametrics
+    ports:
+      - "8428:8428"
+    volumes:
+      - victoriametrics-data:/storage
+    networks:
+      - monitoring
+
+  loki:
+    image: grafana/loki:2.9.4
+    platform: linux/amd64
+    container_name: loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    networks:
+      - monitoring
+
+  fluentd-aggregator1:
+    image: grafana/fluent-plugin-loki:master
+    platform: linux/amd64
+    container_name: fluentd-aggregator1
+    user: root
+    environment:
+      - FLUENT_UID=0
+    ports:
+      - "24224:24224"
+    volumes:
+      - ./fluentd/aggregator.conf:/fluentd/etc/fluent.conf
+      - fluentd-aggregator1-buffer:/fluentd/buffer
+    networks:
+      - monitoring
+
+  fluentd-aggregator2:
+    image: grafana/fluent-plugin-loki:master
+    platform: linux/amd64
+    container_name: fluentd-aggregator2
+    user: root
+    environment:
+      - FLUENT_UID=0
+    ports:
+      - "24225:24224"
+    volumes:
+      - ./fluentd/aggregator.conf:/fluentd/etc/fluent.conf
+      - fluentd-aggregator2-buffer:/fluentd/buffer
+    networks:
+      - monitoring
+
+  fluentd-forwarder:
+    image: fluent/fluentd:v1.16-debian-1
+    platform: linux/amd64
+    container_name: fluentd-forwarder
+    user: root
+    environment:
+      - FLUENT_UID=0
+    volumes:
+      - ./fluentd/forwarder.conf:/fluentd/etc/fluent.conf
+      - /tmp/sample.log:/var/log/sample.log
+      - /tmp/sample_json.log:/var/log/sample_json.log
+      - fluentd-forwarder-buffer:/fluentd/buffer
+    depends_on:
+      - fluentd-aggregator1
+      - fluentd-aggregator2
+    networks:
+      - monitoring
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   platform: linux/amd64
+  #   container_name: grafana
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #     - GF_AUTH_AZUREAD_ORG_MAPPING=[\"eb44062a-d915-406e-b700-a24843df4372:Main Org.:Viewer\",\"ab2a9739-f918-4dd5-bbdd-3fe25cf8e4ab:Main Org.:Editor\"]
+  #   volumes:
+  #     - grafana-storage:/var/lib/grafana
+  #     - grafana-dashboards:/etc/grafana/provisioning/dashboards
+  #     - ./loki-datasource.yaml:/etc/grafana/provisioning/datasources/loki.yaml
+  #     - ./victoria-datasource.yaml:/etc/grafana/provisioning/datasources/victoria.yaml
+  #     - ./grafana.ini:/etc/grafana/grafana.ini  
+  #   depends_on:
+  #     - victoriametrics
+  #     - loki
+  #   networks:
+  #     - monitoring
+  grafana:
+    image: grafana/grafana:latest
+    platform: linux/amd64
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_AZUREAD_ENABLED=true
+      - GF_AUTH_AZUREAD_ALLOW_SIGN_UP=true
+      - GF_AUTH_AZUREAD_CLIENT_ID=
+      - GF_AUTH_AZUREAD_CLIENT_SECRET=
+      - GF_AUTH_AZUREAD_SCOPES=openid email profile
+      - GF_AUTH_AZUREAD_AUTH_URL=
+      - GF_AUTH_AZUREAD_TOKEN_URL=
+      - GF_AUTH_AZUREAD_ALLOWED_ORGANIZATIONS=
+      - GF_AUTH_AZUREAD_ALLOWED_GROUPS=
+      - GF_AUTH_AZUREAD_USE_PKCE=true
+      - GF_AUTH_AZUREAD_FORCE_USE_GRAPH_API=false
+      - GF_AUTH_AZUREAD_ROLE_ATTRIBUTE_STRICT=false
+      # Put Editor first so it takes priority if multiple groups match
+      - GF_AUTH_AZUREAD_ORG_MAPPING=[":Main Org.:Editor",":Main Org.:Viewer"]
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - grafana-dashboards:/etc/grafana/provisioning/dashboards
+      - ./loki-datasource.yaml:/etc/grafana/provisioning/datasources/loki.yaml
+      - ./victoria-datasource.yaml:/etc/grafana/provisioning/datasources/victoria.yaml
+    depends_on:
+      - victoriametrics
+      - loki
+    networks:
+      - monitoring
+
+
+
+networks:
+  monitoring:
+
+volumes:
+  grafana-storage:
+  grafana-dashboards:
+  victoriametrics-data:
+  fluentd-aggregator1-buffer:
+  fluentd-aggregator2-buffer:
+  fluentd-forwarder-buffer:

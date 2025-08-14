@@ -1,0 +1,50 @@
+<source>
+  @type tail                       # Tails log files
+  path /var/log/sample.log         # Absolute path to log file
+  pos_file /fluentd/buffer/sample.pos  # Tracks read position (survives restarts)
+  tag sample.log                   # Assigns this tag to all logs
+  format none                      # Treats lines as raw text (no parsing)
+  refresh_interval 10s             # Check for file rotation every 10s
+</source>
+
+<filter sample.log>                # Processes logs with tag 'sample.log'
+  @type record_transformer         # Modifies log records
+  <record>
+    host "#{Socket.gethostname}"   # Adds hostname field (used as Loki label)
+    fluentd_worker $worker_id      # Adds worker process ID (use cautiously)
+    stream_id "#{rand(1000000)}"
+  </record>
+</filter>
+
+<match sample.log>
+  @type forward                    # Sends logs to other Fluentd nodes
+  
+  <server>
+    name aggregator1               # Logical name
+    host fluentd-aggregator1       # Docker service DNS name
+    port 24224                     # Forwarding port
+  </server>
+  <server>
+    name aggregator2
+    host fluentd-aggregator2
+    port 24224
+  </server>
+
+  <buffer>
+    @type file                     # Disk-backed buffer (survives restarts)
+    path /fluentd/buffer/forward   # Buffer file directory
+    flush_interval 1s              # Max 1 second batching
+    chunk_limit_size 1m            # 1MB chunks
+    total_limit_size 500m          # 500MB total disk usage
+    retry_forever true             # Never give up on retries
+    overflow_action block          # Stop accepting logs when full
+  </buffer>
+
+  load_balancer_type roundrobin    # Distribute traffic evenly
+  
+  # <secondary>
+  #   @type file                     # Disk-based failover
+  #   path /fluentd/buffer/forward-failover
+  #   flush_interval 1s
+  # </secondary>
+</match>

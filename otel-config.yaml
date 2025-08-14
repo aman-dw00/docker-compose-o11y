@@ -1,0 +1,77 @@
+extensions:
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+receivers:
+  jmx/activemq1:
+    jar_path: /opt/opentelemetry-java-contrib-jmx-metrics.jar
+    target_system: activemq
+    endpoint: service:jmx:rmi:///jndi/rmi://activemq:1099/jmxrmi
+    collection_interval: 30s
+  jmx/activemq2:
+    jar_path: /opt/opentelemetry-java-contrib-jmx-metrics.jar
+    target_system: activemq
+    endpoint: service:jmx:rmi:///jndi/rmi://activemq:1099/jmxrmi
+    collection_interval: 30s
+  jmx/activemq3:
+    jar_path: /opt/opentelemetry-java-contrib-jmx-metrics.jar
+    target_system: activemq
+    endpoint: service:jmx:rmi:///jndi/rmi://activemq:1099/jmxrmi
+    collection_interval: 30s
+
+processors:
+  filter/activemq:
+    metrics:
+      exclude:
+        match_type: strict
+        metric_names:
+          - "activemq.connection.count"
+          - "activemq.consumer.count"
+          - "activemq.memory.usage"
+          - "activemq.message.expired"
+          - "activemq.message.current"
+          - "activemq.disk.store_usage"
+          - "activemq.message.wait_time.avg"
+          - "activemq.disk.temp_usage"
+  batch:
+  attributes/insert:
+    actions:
+      - key: env
+        action: insert
+        value: test
+      - key: host.name
+        action: insert
+        value: localhost
+      - key: site.name
+        action: insert
+        value: QA
+      - key: otel
+        action: insert
+        value: activeMQ
+
+  resource/activemq1:
+    attributes:
+      - action: upsert
+        key: service.name
+        value: activemq-1
+      - action: upsert
+        key: service.namespace
+        value: activemq
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+  debug:
+    verbosity: detailed
+
+service:
+  extensions: [pprof]
+  telemetry:
+    metrics:
+      level: detailed
+
+  pipelines:
+    metrics/activemq1:
+      receivers: [jmx/activemq1,jmx/activemq2,jmx/activemq3]
+      processors: [filter/activemq,attributes/insert, resource/activemq1, batch]
+      exporters: [debug]
